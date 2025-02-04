@@ -45,8 +45,7 @@ cycle <- "2024"
 
 # Set up the database connection
 
-con <- odbcConnectAccess2007(paste0("E:/",cycle,
-                                    " Integrated Report/Data/WQP_datapipline/WQP pipeline/_targets/Phase 1 Database.accdb"))
+con <- odbcConnectAccess2007(paste0("DATABASE CONNECTION HERE"))
 
 dat <- sqlQuery(con, "
 SELECT 
@@ -124,9 +123,9 @@ Required are the lookup tables for acute and chronic criteria. These are appende
 -   The adjustments shouldn't affect other assessments and it is only for the purposes of applying the appropriate criteria.
 
 ```{r}
-acute_path <- "E:/2024 Integrated Report/Data/Duplicate Detections/Data_Duplicate_Detect_2024/Data/Support Tables/Acute_NH3_Criteria.csv"
+acute_path <- "PATH"
 
-chronic_path <- "E:/2024 Integrated Report/Data/Duplicate Detections/Data_Duplicate_Detect_2024/Data/Support Tables/Chronic_NH3_Criteria.csv"
+chronic_path <- "PATH"
 
 acute_lookup <- read.csv(acute_path,
                          header = T,

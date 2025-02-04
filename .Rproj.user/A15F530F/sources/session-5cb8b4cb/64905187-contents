@@ -1,0 +1,320 @@
+---
+title: "Ammonia Assessments"
+author: "DEQ Planning Branch"
+date: "9/8/2022"
+output: 
+        html_document:
+                toc: yes
+                toc_float: yes
+---
+
+The purpose of this document is to record the steps and processes when producing Ammonia Assessments for use in determining the attainment of WQS for the state of Arkansas.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, include=FALSE}
+library(tidyr)
+library(magrittr)
+library(dplyr)
+library(lubridate)
+library(stringr)
+library(foreign)
+library(RODBC)
+options(scipen = 999)
+```
+
+# Data Reading and Pre-Processing
+
+This contains some older data reads for QC purposes but we need to connect to the most recent database and read in the main dataset.
+
+```{r Data Pulling}
+# ammonia_pairing <- read.csv("E:/2022 Integrated Report/Data Assessments/AMMONIA ASSESSMENTS/Data/assessment_data.csv",
+#                             header = T,
+#                             stringsAsFactors = F,
+#                             strip.white = T,
+#                             na.strings = "")
+#                             
+
+# con <- odbcConnectAccess2007("E:/2022 Integrated Report/WQAR_Database QC/Phase 3 QC/PHASE 3 DATASET.accdb")
+#                              
+# dat <- sqlFetch(con, "Markdown Data")
+# 
+cycle <- "2024"
+
+# Set up the database connection
+
+con <- odbcConnectAccess2007(paste0("DATABASE CONNECTION HERE"))
+
+dat <- sqlQuery(con, "
+SELECT 
+        Merged_data.OrganizationIdentifier,
+        AU_Information.AU, 
+        AU_Information.Ecoregion,
+        Merged_sites.StationID, 
+        Merged_sites.StationType,
+        Merged_data.DateSampled, 
+        Merged_data.Parameter, 
+        Merged_data.Fraction,
+        Merged_data.Units,
+        Merged_data.Result, 
+        AU_Information.ORW, 
+        Merged_data.ID, 
+        Merged_data.Usability
+
+FROM 
+        (Merged_sites INNER JOIN Merged_data ON Merged_sites.StationID = Merged_data.StationID)
+
+INNER JOIN 
+        AU_Information ON Merged_sites.StationID = AU_Information.StationID
+WHERE
+    Usability = 'USE';
+")%>%
+    rename(c("CollectionDate" = "DateSampled", 
+             "SiteID" = "StationID",
+             "ResultValue" = "Result",
+             "Unit" = "Units"))
+
+odbcClose(con)
+
+```
+
+## Data Processing
+
+Since the dataset contains all the usable data for the current cycle, we need to filter it down to the constituents that we need: Water Temp, pH, and Ammonia. Further processing applies the seasonality component to the data, in addition, if duplicates exist, it will take the most protective value. Lastly it pivots the data so parameters are in their own column
+
+```{r Data Processing}
+
+ammonia_pairing <- dat %>%
+        filter(CollectionDate >= "2020-04-01"& CollectionDate <= "2023-03-31")%>%
+        filter(Parameter =="pH" |Parameter =="Temperature, water"|Parameter =="Ammonia")%>%
+        mutate(month_num = month(CollectionDate),
+               month_day = paste0(month(CollectionDate),"-",day(CollectionDate)),
+               Season = case_when(month_num %in% c(4:10) ~ "ELP",
+                                  month_num %in% c(1:3) | month_num %in% c(11:12) ~ "ELA"))%>%
+        select(-Fraction, -Unit, -ID)%>% 
+        group_by(SiteID,CollectionDate, Parameter) %>%
+        top_n(1, abs(ResultValue))%>%
+        distinct(AU,SiteID, CollectionDate,Parameter, .keep_all = T)
+
+ammonia_pairing %<>% 
+        pivot_wider(names_from = Parameter, values_from = ResultValue)%>%
+        filter(!is.na(Ammonia)&!is.na(`Temperature, water`)& !is.na(pH))
+
+
+```
+
+# Assessment Processing
+
+Create Acute and Chronic datasets. The chronic dataset requires an aggregation (mean) of data points by month to compare against the criteria. The lookup tables for criteria values are read in and joined to the respective datasets (acute and chronic).
+
+Required are the lookup tables for acute and chronic criteria. These are appended to the datasets ammonia_acute and ammonia_chronic. Each go through their own formatting:
+
+-   Acute assessments are taken as the raw value, all values are rounded to the nearest 0 or 1st decimal to match the lookup table
+
+    -   Since the lookup tables have a max pH value of 9 and a minimum of 6.5, the minimum and maximum criteria values are applied
+
+-   Chronic assessments use monthly means so means for NH4, temp and pH are calculated on a per-month basis
+
+    -   See above note about pH lookup tables, in this case values above 9 are put at 9 and values below 6.5 are put at 0.1
+    -   The AM may change to a formula calculation in the future so these code are subject to change
+
+-   The adjustments shouldn't affect other assessments and it is only for the purposes of applying the appropriate criteria.
+
+```{r}
+acute_path <- "PATH"
+
+chronic_path <- "PATH"
+
+acute_lookup <- read.csv(acute_path,
+                         header = T,
+                         stringsAsFactors = F,
+                         strip.white = T,
+                         na.strings = "")
+
+chronic_lookup <- read.csv(chronic_path,
+                           header = T,
+                           stringsAsFactors = F,
+                           strip.white = T,
+                           na.strings = "")
+
+#chronic assessments are based on monthly averages so We'll aggregate and summarise here
+
+ammonia_chronic <- ammonia_pairing %>%
+        mutate(month_year = (paste(month(CollectionDate), year(CollectionDate), sep = "-"))) %>%
+        group_by(AU, month_year, Season) %>%
+        summarise(mean_nh4 = mean(Ammonia),
+                  mean_temp = mean(`Temperature, water`),
+                  mean_ph = mean(pH),
+                  .groups = "drop") 
+
+ammonia_chronic$mean_temp <- round(ammonia_chronic$mean_temp, digits = 0)
+ammonia_chronic$mean_ph <- round(ammonia_chronic$mean_ph, digits = 1)
+
+ammonia_chronic %<>% mutate(mean_ph = case_when(mean_ph < 6.5 ~ 0.1,
+                                                mean_ph > 9 ~ 9,
+                                                TRUE ~ mean_ph))
+
+# Join the look-up tables to the ammonia pairing object
+
+#acute tables
+ammonia_pairing$pH <- round(ammonia_pairing$pH, digits =1)
+
+ammonia_acute <- left_join(ammonia_pairing,
+                           acute_lookup,
+                           by = c("pH" = "pH"))
+
+ammonia_acute %<>% mutate(Acute_Trout = case_when(pH < 6.5 ~ 32.6,
+                                                  pH > 9 ~ 0.885,
+                                                  TRUE ~ Acute_Trout),
+                          Acute_NoTrout = case_when(pH < 6.5 ~ 48.8,
+                                                    pH > 9 ~ 1.32,
+                                                    TRUE ~ Acute_NoTrout))
+
+
+
+#chronic tables
+
+ammonia_chronic <- left_join(ammonia_chronic,
+                             chronic_lookup,
+                             by = c("mean_temp" = "Temperature",
+                                    "mean_ph" = "pH",
+                                    "Season" = "Season"))
+
+
+
+```
+
+# Assessments
+
+## Acute Assessments
+
+QC failures and trout water designations are read in first. The subsequent pipes then filter out QC failures and apply a trout/ no trout designation for use. Criteria is then applied to determine if the waterbody attains/fails assessment.
+
+-   A summary for each AU is generated where a fail designation is applied if 2 or more exceedances are calculated and a pass designation is applied to AUs with less than 2 exceedances
+
+See the Asessment Methodology document for full details on the how the criteria is applied
+
+```{r}
+Qc_fail_Aus <- c("AR_11110207_005")
+
+trout_water <- read.csv("Data/trout_waters.csv")
+
+#adding troutwater designation
+ammonia_acute <- ammonia_acute %>%
+        select(AU, CollectionDate, Ammonia, Season, Acute_Trout, Acute_NoTrout) %>%
+        filter(AU != Qc_fail_Aus) %>%
+        mutate(Trout_water = case_when(AU %in% trout_water$AU ~ "Trout",
+                                       !AU %in% trout_water$AU ~ "No Trout"))
+
+#counting the number of exceedances per AU
+ammonia_acute_summary <- ammonia_acute %>%
+        group_by(AU, Trout_water) %>%
+        summarise(exceedances = case_when(all(Trout_water == "Trout" ) ~ sum(Ammonia >= Acute_Trout),
+                                          all(Trout_water == "No Trout" ) ~ sum(Ammonia >= Acute_NoTrout)),
+                  Samples = n()) %>%
+        ungroup()
+
+#QC Bit
+# test = c("AR_TEST","TROUT",2)
+# 
+# ammonia_acute_summary <- ammonia_acute_summary %>%
+#         rbind(test)
+
+#designating ATTAIN/FAIL                  
+ammonia_acute_summary <- ammonia_acute_summary %>%
+        mutate(Acute_assess = case_when(exceedances >= 2 ~ "FAIL",
+                                        exceedances < 2 ~ "ATTAIN"))
+
+ammonia_acute_summary$AU_Seas <- paste(ammonia_acute_summary$AU, ammonia_acute_summary$Trout_water, sep = "-")
+```
+
+## Chronic Assessment
+
+Chronic assessments have different considerations and different seasonality associated with them vs Acute assessments. Trout waters do not influence these assessments; however, Phase 2 QC considerations must be taken into account.
+
+For more details on calculating attainments, see the assessment methodology.
+
+```{r}
+ammonia_chronic <- ammonia_chronic %>% 
+        filter(AU != Qc_fail_Aus) %>%
+        mutate(Chronic_assess = case_when(Season == "ELA" & mean_nh4 > Criteria * 2.5 ~ "FAIL",
+                                          Season == "ELA" & mean_nh4 <= Criteria * 2.5 ~ "ATTAIN",
+                                          Season == "ELP" & mean_nh4 > Criteria ~ "FAIL",
+                                          Season == "ELP" & mean_nh4 <= Criteria ~ "ATTAIN"))
+
+ammonia_chronic$AU_Seas <- paste(ammonia_chronic$AU, ammonia_chronic$Season, sep = "-")
+```
+
+## Chronic Summaries
+
+We now need to separate out the assessments and apply further phase 2 considerations. The AM says that a waterbody may be listed if it has 2 or more exceedances of the criteria. For a waterbody to attain, it needs 10 samples with no more than 1 exceedance.
+
+```{r}
+ammonia_chronic_fails <- ammonia_chronic %>%
+        filter(Chronic_assess == "FAIL") %>% 
+        group_by(AU_Seas) %>%
+        summarise(Samples = n())%>%
+        mutate(type = "Chronic",
+               Assessment = case_when(Samples < 2 ~ "Not Enough Information",
+                                      Samples >= 2 ~ "FAILS"))
+chronic_fails <- ammonia_chronic_fails$AU_Seas
+
+ammonia_chronic_attain <- ammonia_chronic %>%
+        filter(Chronic_assess == "ATTAIN") %>% 
+        group_by(AU_Seas) %>%
+        summarize(Samples = n()) %>%
+        filter(!AU_Seas %in% chronic_fails)%>%
+        mutate(type = "Chronic",
+               Assessment = case_when(Samples < 10 ~ "Not Enough Information",
+                                      Samples >= 10 ~ "ATTAIN"))
+
+```
+
+## Acute Summaries
+
+Listing method for Acute assessments is similar to that of Chronic. See above
+
+```{r}
+ammonia_acute_fails <- ammonia_acute_summary %>%
+        filter(Acute_assess == "FAIL")%>%
+        mutate(type = "Acute",
+               Assessment = case_when(Samples < 2 ~ "Not Enough Information",
+                                      Samples >= 2 ~ "FAILS"))%>%
+        select(AU_Seas, Samples,type,Assessment)
+
+acute_fails <- ammonia_acute_fails$AU_Seas
+
+ammonia_acute_attain <- ammonia_acute_summary %>%
+        filter(Acute_assess == "ATTAIN") %>% 
+        group_by(AU_Seas) %>%
+        filter(!AU_Seas %in% acute_fails)%>%
+        mutate(type = "Acute",
+               Assessment = case_when(Samples < 10 ~ "Not Enough Information",
+                                      Samples >= 10 ~ "ATTAIN"))%>%
+        select(AU_Seas, Samples,type,Assessment)
+```
+
+## Full summaries
+
+```{r}
+ammonia_full_summary <- rbind(ammonia_acute_attain, 
+                              ammonia_acute_fails,
+                              ammonia_chronic_attain,
+                              ammonia_chronic_fails)
+
+ammonia_full_summary <- ammonia_full_summary %>%
+        separate(AU_Seas, into = c("AU","Season"), sep = "-")
+head(ammonia_full_summary)
+       
+```
+
+# Export
+
+```{r include = T}
+write.csv(ammonia_full_summary, 
+          "Outputs/AMMONIA ASSESSMENTS.csv",
+          row.names = FALSE)
+
+```
