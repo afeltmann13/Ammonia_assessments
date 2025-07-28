@@ -30,17 +30,12 @@ options(scipen = 999)
 This contains some older data reads for QC purposes but we need to connect to the most recent database and read in the main dataset.
 
 ```{r Data Pulling}
-# ammonia_pairing <- read.csv("E:/2022 Integrated Report/Data Assessments/AMMONIA ASSESSMENTS/Data/assessment_data.csv",
-#                             header = T,
-#                             stringsAsFactors = F,
-#                             strip.white = T,
-#                             na.strings = "")
-#                             
+ammonia_pairing <- read.csv("E:/2022 Integrated Report/Data Assessments/AMMONIA ASSESSMENTS/Data/assessment_data.csv",
+                            header = T,
+                            stringsAsFactors = F,
+                            strip.white = T,
+                            na.strings = "")
 
-# con <- odbcConnectAccess2007("E:/2022 Integrated Report/WQAR_Database QC/Phase 3 QC/PHASE 3 DATASET.accdb")
-#                              
-# dat <- sqlFetch(con, "Markdown Data")
-# 
 cycle <- "2024"
 
 # Set up the database connection
